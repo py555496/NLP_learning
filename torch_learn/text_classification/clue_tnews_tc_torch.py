@@ -179,7 +179,7 @@ def train(epoch, start_step):
                 canvas1.draw_plot(history1['test_accuracy'])
             #print("avg_acc = %.2f" % (acc_p))
             model._save(epoch, iter_num, optim)
-for epoch in range(0, 15):
+for epoch in range(start_epoch, 15):
     print("------------Epoch: %d ----------------" % epoch)
     train(epoch, start_step)
     if start_step > 0:
