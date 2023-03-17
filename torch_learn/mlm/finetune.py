@@ -1,3 +1,4 @@
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import sys
 import datetime
 import argparse
@@ -17,10 +18,11 @@ from sklearn.metrics import accuracy_score, confusion_matrix, classification_rep
 #文本预处理，用transformer的embeding
 from transformers import BertTokenizer, BertModel, BertConfig
 from transformers import AdamW, get_linear_schedule_with_warmup
+from transformers import DebertaForSequenceClassification, DebertaTokenizer
 from datasets import load_dataset
-pre_trained_model = 'bert-base-chinese'
 data = load_dataset('clue', 'tnews')
-tokenizer = BertTokenizer.from_pretrained(pre_trained_model)
+#tokenizer = DebertaTokenizer.from_pretrained('microsoft/deberta-base')
+tokenizer = AutoTokenizer.from_pretrained('IDEA-CCNL/Erlangshen-DeBERTa-v2-97M-Chinese', use_fast=False)
 
 x_train = data['train']['sentence']
 x_test = data['test']['sentence']
@@ -29,9 +31,11 @@ y_test = data['test']['label']
 #x_train = x_train.reshape(-1, 1)
 #x_test = x_test.reshape(-1, 1)
 x_train, x_dev, y_train, y_dev = train_test_split(x_train, y_train, test_size=0.2)
+train_encoding = tokenizer(x_train, truncation=True, padding=True, max_length=128) 
+train_labels = torch.tensor(y_train) 
+dev_encoding = tokenizer(x_dev, truncation=True, padding=True, max_length=128) 
+dev_labels = torch.tensor(y_dev)
 
-train_encoding = tokenizer(x_train, truncation=True, padding=True, max_length=128)
-dev_encoding = tokenizer(x_dev, truncation=True, padding=True, max_length=128)
 class QueryDataset(Dataset):
     def __init__(self, encodings, labels):
         self.encodings = encodings
@@ -46,20 +50,33 @@ class QueryDataset(Dataset):
         return len(self.labels)
 train_dataset = QueryDataset(train_encoding, y_train)
 dev_dataset = QueryDataset(dev_encoding, y_dev)
+#train_encoding = tokenizer(x_train, truncation=True, padding=True, max_length=128)
+#dev_encoding = tokenizer(x_dev, truncation=True, padding=True, max_length=128)
+#train_dataset = torch.utils.data.TensorDataset(train_encoding['input_ids'], train_encoding['attention_mask'], train_labels)
+#dev_dataset = torch.utils.data.TensorDataset(dev_encoding['input_ids'], dev_encoding['attention_mask'], test_labels)
+#train_dataset = QueryDataset(train_encoding, y_train)
+#dev_dataset = QueryDataset(dev_encoding, y_dev)
 # 单个读取到批量读取
 batch_size = 16
 class_num = 15
 train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
 dev_loader = DataLoader(dev_dataset, batch_size=128, shuffle=True)
+train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+dev_loader = DataLoader(dev_dataset, batch_size=128, shuffle=True)
+
+
 class my_bert_model(nn.Module):
-    def __init__(self, freeze_bert=False, hidden_size=768, base_path='./model/', save_model_name='tc_model.pt'):
+    def __init__(self, freeze_bert=False, hidden_size=768, max_position_embeddings=1024, base_path='./model/', save_model_name='tc_model.pt'):
         super().__init__()
-        self.pre_trained_model = pre_trained_model
-        config = BertConfig.from_pretrained(self.pre_trained_model)
-        config.update({'output_hidden_states':True})
-        self.bert = BertModel.from_pretrained(self.pre_trained_model, config=config)
+        self.pre_trained_model = 'IDEA-CCNL/Erlangshen-DeBERTa-v2-97M-Chinese'
+        self.bert = AutoModelForSequenceClassification.from_pretrained('./mlm_new_save_model/', num_labels=15)
+        #self.bert =  DebertaForSequenceClassification.from_pretrained('./mlm_new_save_model/', num_labels=15)
+        #config = BertConfig.from_pretrained(self.pre_trained_model)
+        #config.update({'output_hidden_states':True})
+        #self.bert = BertModel.from_pretrained(self.pre_trained_model, config=config)
         #print("{} path is {}" % (self.pre_model_name, transformers.torch_cache_home))
-        self.fc = nn.Linear(hidden_size * 8, 15)
+        #self.fc = nn.Linear(hidden_size * 8, 15)
+        #self.fc = nn.Linear(16, 15)
         self.base_path = base_path
         if not os.path.exists(self.base_path):
             os.system("mkdir -p {}".format(self.base_path))
@@ -70,15 +87,10 @@ class my_bert_model(nn.Module):
                 p.requires_grad = False
     def forward(self, input_ids, attention_mask):
         outputs = self.bert(input_ids, attention_mask)
-        all_hidden_states = torch.stack(outputs[2])
-        concat_last_8layers = torch.cat((all_hidden_states[-1], all_hidden_states[-2],
-                                         all_hidden_states[-3], all_hidden_states[-4],
-                                         all_hidden_states[-5], all_hidden_states[-6],
-                                         all_hidden_states[-7], all_hidden_states[-8]
-                                         ), dim=-1)
-        cls_concat = concat_last_8layers[:, 0, :]
-        result = self.fc(cls_concat)
-        return result
+        #print("outputs", outputs[0].shape)
+        #result = self.fc(outputs[0])
+        return outputs[0]
+        #return result
     def _save(self, epoch, step, optim):
         checkpoint = {
             'model': self.state_dict(),
@@ -122,11 +134,7 @@ total_steps = len(train_loader) * 1
 scheduler = get_linear_schedule_with_warmup(optim,
                                             num_warmup_steps=0,
                                             num_training_steps=total_steps)
-import hiddenlayer as hl
-import seaborn as sns
-history1 = hl.History()
-canvas1 = hl.Canvas()
-print_step = 25
+
 def train(epoch, start_step):
     print(epoch, start_step)
     model.train()
@@ -167,17 +175,15 @@ def train(epoch, start_step):
                 with torch.no_grad():
                     pre_labels = model(input_ids, attention_mask=attention_mask)
                     preds = torch.argmax(pre_labels,dim=1)
-                    #print(preds)
-                    #print(labels)
                     accuracy = torch.mean(torch.eq(preds, labels).to(device).float())
                     acc_arr.append(accuracy)
                 break
             acc_p = sum(acc_arr) / float(len(acc_arr))
-            history1.log(iter_num, train_loss=loss, test_accuracy=acc_p)
-            with canvas1:
-                canvas1.draw_plot(history1['train_loss'])
-                canvas1.draw_plot(history1['test_accuracy'])
-            #print("avg_acc = %.2f" % (acc_p))
+            #history1.log(iter_num, train_loss=loss, test_accuracy=acc_p)
+            #with canvas1:
+            #    canvas1.draw_plot(history1['train_loss'])
+            #    canvas1.draw_plot(history1['test_accuracy'])
+            print("avg_acc = %.2f" % (acc_p))
             model._save(epoch, iter_num, optim)
 for epoch in range(start_epoch, 15):
     print("------------Epoch: %d ----------------" % epoch)
@@ -186,3 +192,28 @@ for epoch in range(start_epoch, 15):
         #热启动的start step只生效一次
         start_step = 0
     os.system('cp ./model/tc_model.pt ./save_model/')
+"""
+# 加载预训练模型和tokenizer
+tokenizer = AutoTokenizer.from_pretrained('IDEA-CCNL/Erlangshen-DeBERTa-v2-97M-Chinese', use_fast=False)
+#model = AutoModelForMaskedLM.from_pretrained(ori_model)
+ori_model = './output/checkpoint-65000/'
+model = AutoModelForSequenceClassification.from_pretrained(ori_model, num_labels=2)
+
+# 输入文本
+text = "我再北京天安门"
+
+# 对文本进行tokenize和padding
+inputs = tokenizer(text, padding=True, truncation=True, return_tensors="pt")
+
+# 使用模型进行推理
+outputs = model(**inputs)
+
+# 获取预测结果
+predictions = outputs.logits.argmax(dim=1)
+
+# 打印结果
+if predictions == 1:
+    print("Positive sentiment detected.")
+else:
+    print("Negative sentiment detected.")
+"""
